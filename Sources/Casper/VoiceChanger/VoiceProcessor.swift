@@ -2,17 +2,27 @@ import AVFoundation
 
 /// Оффлайновая обработка записанного голоса.
 ///
-/// Результат пишется сразу в двух форматах:
-/// * `.wav` — PCM 48 кГц моно. Нужен для прослушивания и в будущем для
-///   кодирования в Opus (настоящее голосовое сообщение Telegram).
-/// * `.m4a` — AAC. Им можно отправить обработанный звук уже сейчас,
-///   но Telegram покажет его как аудиофайл, а не как голосовое сообщение.
-///   Подробности и план — в docs/LIMITATIONS.md.
+/// Результат пишется сразу в трёх форматах:
+/// * `.ogg` — Opus в контейнере OGG. Это и есть настоящее голосовое сообщение
+///   Telegram: пузырёк с волной, а не вложенный файл. Кодирует сама iOS
+///   (`OpusStreamEncoder`), контейнер собирает `OggOpusWriter`.
+/// * `.m4a` — AAC. Нужен для локального прослушивания (AVAudioPlayer не играет
+///   Opus) и как запасной путь отправки, если кодек Opus вдруг недоступен.
+/// * `.wav` — PCM 48 кГц моно, для отладки и повторной обработки.
 final class VoiceProcessor {
     struct Output: Equatable {
         var wavURL: URL
         var m4aURL: URL
+        /// nil, если кодек Opus недоступен — тогда отправка пойдёт как аудиофайл.
+        var oggURL: URL?
+        /// Волна громкости для пузырька, 63 байта. nil вместе с `oggURL`.
+        var waveform: Data?
         var duration: TimeInterval
+        /// Почему не получилось сделать голосовое, если не получилось.
+        var opusFailure: String?
+
+        /// true — можно отправить как настоящее голосовое сообщение.
+        var canSendAsVoiceNote: Bool { oggURL != nil }
     }
 
     enum Failure: LocalizedError {
@@ -28,6 +38,8 @@ final class VoiceProcessor {
     }
 
     static let sampleRate: Double = 48_000
+    /// Одно значение волны на 10 мс звука.
+    private static let framesPerPeak = 480
 
     func process(inputURL: URL, effect: VoiceEffect, outputDirectory: URL) throws -> Output {
         guard let input = try? AVAudioFile(forReading: inputURL) else {
@@ -92,8 +104,10 @@ final class VoiceProcessor {
         let stamp = Int(Date().timeIntervalSince1970)
         let wavURL = outputDirectory.appendingPathComponent("casper-voice-\(stamp).wav")
         let m4aURL = outputDirectory.appendingPathComponent("casper-voice-\(stamp).m4a")
+        let oggURL = outputDirectory.appendingPathComponent("casper-voice-\(stamp).ogg")
         try? FileManager.default.removeItem(at: wavURL)
         try? FileManager.default.removeItem(at: m4aURL)
+        try? FileManager.default.removeItem(at: oggURL)
 
         let wavSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -114,6 +128,16 @@ final class VoiceProcessor {
         let wavFile = try AVAudioFile(forWriting: wavURL, settings: wavSettings)
         let m4aFile = try AVAudioFile(forWriting: m4aURL, settings: m4aSettings)
 
+        // Голосовое сообщение — вещь желательная, но не обязательная: если кодек
+        // Opus в системе недоступен, обработка всё равно должна дойти до конца.
+        var opus: OpusPipeline?
+        var opusFailure: String?
+        do {
+            opus = try OpusPipeline(url: oggURL)
+        } catch {
+            opusFailure = error.localizedDescription
+        }
+
         guard let buffer = AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat,
                                             frameCapacity: engine.manualRenderingMaximumFrameCount) else {
             throw Failure.renderFailed("не удалось выделить буфер")
@@ -121,6 +145,7 @@ final class VoiceProcessor {
 
         let targetFrames = AVAudioFramePosition((sourceDuration + effect.tailSeconds) * Self.sampleRate)
         var written: AVAudioFramePosition = 0
+        var peaks: [Float] = []
 
         while written < targetFrames {
             let remaining = targetFrames - written
@@ -131,6 +156,15 @@ final class VoiceProcessor {
             case .success:
                 try wavFile.write(from: buffer)
                 try m4aFile.write(from: buffer)
+                if opus != nil {
+                    let samples = Self.integerSamples(from: buffer, appendingPeaksTo: &peaks)
+                    do {
+                        try opus?.append(samples: samples)
+                    } catch {
+                        opusFailure = error.localizedDescription
+                        opus = nil
+                    }
+                }
                 written += AVAudioFramePosition(buffer.frameLength)
             case .insufficientDataFromInputNode:
                 // Файл доигран — на этом останавливаемся.
@@ -148,12 +182,56 @@ final class VoiceProcessor {
         engine.stop()
         engine.disableManualRenderingMode()
 
+        var finalOggURL: URL?
+        var waveform: Data?
+        if let opus {
+            do {
+                try opus.finish()
+                finalOggURL = oggURL
+                waveform = TelegramWaveform.encode(peaks: peaks)
+            } catch {
+                opusFailure = error.localizedDescription
+                try? FileManager.default.removeItem(at: oggURL)
+            }
+        }
+
         let duration = Double(written) / Self.sampleRate
-        return Output(wavURL: wavURL, m4aURL: m4aURL, duration: duration)
+        return Output(wavURL: wavURL,
+                      m4aURL: m4aURL,
+                      oggURL: finalOggURL,
+                      waveform: waveform,
+                      duration: duration,
+                      opusFailure: opusFailure)
+    }
+
+    /// Переводит кадры из Float32 в Int16 (этого ждёт кодек) и попутно
+    /// снимает пики громкости для волны.
+    private static func integerSamples(from buffer: AVAudioPCMBuffer,
+                                       appendingPeaksTo peaks: inout [Float]) -> [Int16] {
+        guard let channel = buffer.floatChannelData?[0] else { return [] }
+        let count = Int(buffer.frameLength)
+        var samples = [Int16](repeating: 0, count: count)
+        var peak: Float = 0
+        var sinceLastPeak = 0
+
+        for index in 0..<count {
+            let value = channel[index]
+            let clamped = min(max(value, -1), 1)
+            samples[index] = Int16(clamped * 32_767)
+            peak = max(peak, abs(clamped))
+            sinceLastPeak += 1
+            if sinceLastPeak == framesPerPeak {
+                peaks.append(peak)
+                peak = 0
+                sinceLastPeak = 0
+            }
+        }
+        if sinceLastPeak > 0 { peaks.append(peak) }
+        return samples
     }
 
     /// Убирает старые временные файлы, чтобы папка не разрасталась.
-    func cleanUp(directory: URL, keepNewest count: Int = 4) {
+    func cleanUp(directory: URL, keepNewest count: Int = 6) {
         let manager = FileManager.default
         guard let files = try? manager.contentsOfDirectory(at: directory,
                                                            includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
@@ -165,5 +243,29 @@ final class VoiceProcessor {
         for file in sorted.dropFirst(count) {
             try? manager.removeItem(at: file)
         }
+    }
+}
+
+/// Связка «кодек + контейнер»: принимает PCM, пишет готовый OGG на диск.
+final class OpusPipeline {
+    private let encoder: OpusStreamEncoder
+    private let writer: OggOpusWriter
+
+    init(url: URL) throws {
+        encoder = try OpusStreamEncoder()
+        writer = try OggOpusWriter(url: url)
+    }
+
+    func append(samples: [Int16]) throws {
+        for packet in try encoder.push(samples) {
+            try writer.append(packet: packet, frames: OpusStreamEncoder.framesPerPacket)
+        }
+    }
+
+    func finish() throws {
+        for packet in try encoder.finish() {
+            try writer.append(packet: packet, frames: OpusStreamEncoder.framesPerPacket)
+        }
+        try writer.finish()
     }
 }

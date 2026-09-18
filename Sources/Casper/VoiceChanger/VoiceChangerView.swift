@@ -171,6 +171,8 @@ struct VoiceChangerView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(targetChat == nil || isSending)
+
+            sendModeHint(output: output)
         }
         .padding(16)
         .casperSurface(cornerRadius: 20)
@@ -233,6 +235,21 @@ struct VoiceChangerView: View {
         }
     }
 
+    /// Честно показывает, чем именно уйдёт запись: голосовым или файлом.
+    @ViewBuilder
+    private func sendModeHint(output: VoiceProcessor.Output) -> some View {
+        if output.canSendAsVoiceNote {
+            Label("Уйдёт как голосовое сообщение", systemImage: "waveform.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Label(output.opusFailure ?? "Кодек Opus недоступен — уйдёт как аудиофайл.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+
     private func play(url: URL) {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
@@ -259,10 +276,20 @@ struct VoiceChangerView: View {
         isSending = true
         Task {
             do {
-                try await environment.telegram.sendAudioFile(path: output.m4aURL.path,
-                                                             duration: Int(output.duration.rounded()),
-                                                             title: "Casper · \(effect.title)",
-                                                             to: chat.id)
+                let duration = Int(output.duration.rounded())
+                if let oggURL = output.oggURL {
+                    // Настоящее голосовое сообщение: пузырёк с волной.
+                    try await environment.telegram.sendVoiceNote(path: oggURL.path,
+                                                                 duration: duration,
+                                                                 waveform: output.waveform,
+                                                                 to: chat.id)
+                } else {
+                    // Кодек Opus недоступен — уходит как аудиофайл.
+                    try await environment.telegram.sendAudioFile(path: output.m4aURL.path,
+                                                                 duration: duration,
+                                                                 title: "Casper · \(effect.title)",
+                                                                 to: chat.id)
+                }
                 isSending = false
                 cleanUpAndDismiss()
             } catch {

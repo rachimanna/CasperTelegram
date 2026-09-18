@@ -27,7 +27,9 @@ targets:
     settings:
       base:
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) CASPER_TDLIB
-        OTHER_LDFLAGS: $(inherited) -lc++
+        # TDLib написан на C++ и использует zlib (Gzip, crc32) —
+        # обе библиотеки системные, их нужно подключить явно.
+        OTHER_LDFLAGS: $(inherited) -lc++ -lz
 YML
   SPEC="project.local.yml"
 else

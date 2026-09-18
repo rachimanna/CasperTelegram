@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Сборка и тесты (симулятор)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      TDLIB_VERSION: 1.8.67-d1085f9c
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Версия Xcode
+        run: xcodebuild -version
+
+      - name: Установить XcodeGen
+        run: brew install xcodegen
+
+      - name: Кэш TDLib
+        id: tdlib-cache
+        uses: actions/cache@v4
+        with:
+          path: Vendor
+          key: tdlib-1.8.67-d1085f9c-v1
+
+      - name: Скачать TDLib
+        if: steps.tdlib-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: bash Scripts/fetch-tdlib.sh
+
+      - name: Сгенерировать Xcode-проект
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: bash Scripts/generate-project.sh
+
+      - name: Собрать и протестировать
+        run: bash Scripts/ci-test.sh
+
+      - name: Выгрузить результаты тестов
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/TestResults.xcresult
+          if-no-files-found: ignore
+          retention-days: 7

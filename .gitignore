@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Xcode project генерируется XcodeGen — в репозитории его нет
+*.xcodeproj
+*.xcworkspace
+project.local.yml
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# Генерируемые файлы
+Resources/Info.generated.plist
+Sources/App/Secrets.generated.swift
+
+# Сторонние бинарники (TDLib скачивается скриптом)
+Vendor/
+
+# Секреты и подпись — НИКОГДА не коммитить
+*.p12
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.p8
+.env
+.env.*
+secrets.json
+
+# Сборки
+*.ipa
+*.app.dSYM.zip
+*.xcarchive
+fastlane/report.xml
+fastlane/Preview.html

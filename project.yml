@@ -1,0 +1,96 @@
+# Спецификация Xcode-проекта для XcodeGen.
+# Сам .xcodeproj в репозитории НЕ хранится — он генерируется командой
+#   ./Scripts/generate-project.sh
+# Это позволяет править проект с iPhone обычным текстовым редактором.
+name: CasperTelegram
+
+options:
+  bundleIdPrefix: app.casper
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: false
+
+fileGroups:
+  - README.md
+  - NOTICE.md
+  - docs
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+    SWIFT_EMIT_LOC_STRINGS: "YES"
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+
+targets:
+  CasperTelegram:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_NAME: Casper
+        PRODUCT_MODULE_NAME: CasperTelegram
+        PRODUCT_BUNDLE_IDENTIFIER: app.casper.telegram
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: "NO"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+    info:
+      path: Resources/Info.generated.plist
+      properties:
+        CFBundleDisplayName: Casper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Микрофон нужен для записи голосовых сообщений и работы Voice Changer.
+        NSCameraUsageDescription: Камера нужна, чтобы снимать и отправлять фото и видео.
+        NSPhotoLibraryUsageDescription: Доступ к медиатеке нужен, чтобы отправлять фото и видео в чаты.
+        NSFaceIDUsageDescription: Face ID защищает раздел Casper и локальный архив сообщений.
+        NSContactsUsageDescription: Доступ к контактам нужен, чтобы находить ваших друзей в Telegram.
+        UIBackgroundModes:
+          - remote-notification
+          - audio
+
+  CasperTelegramTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.casper.telegram.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+    dependencies:
+      - target: CasperTelegram
+
+schemes:
+  CasperTelegram:
+    build:
+      targets:
+        CasperTelegram: all
+        CasperTelegramTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - CasperTelegramTests
+    archive:
+      config: Release

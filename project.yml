@@ -76,6 +76,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.casper.telegram.tests
         GENERATE_INFOPLIST_FILE: "YES"
+        # Приложение называется Casper.app (PRODUCT_NAME), а не CasperTelegram.app,
+        # поэтому путь к хосту тестов задаём явно — иначе xcodebuild его не находит.
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Casper.app/Casper"
+        BUNDLE_LOADER: "$(TEST_HOST)"
     dependencies:
       - target: CasperTelegram
 
